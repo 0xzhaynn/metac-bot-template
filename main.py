@@ -709,22 +709,34 @@ if __name__ == "__main__":
     # uncomment and edit to pin specific models.
     template_bot = FallTemplateBot2026(
         research_reports_per_question=1,
-        predictions_per_research_report=2,
+        predictions_per_research_report=1,
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
-        # Pinned to OpenRouter free models (no paid credits on this account).
+        # Free-tier budget (Nov 2026): Gemini 2.5 Flash 20 req/day, Flash Lite
+        # 20 req/day, OpenRouter free ~50 req/day. One research + one forecast
+        # + one parse per question keeps ~20 questions/day inside the limits.
         llms={
+            # Forecaster: strongest free model available.
             "default": GeneralLlm(
-                model="openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+                model="gemini/gemini-2.5-flash",
                 temperature=0.3,
-                timeout=120,
-                allowed_tries=3,
+                timeout=180,
+                allowed_tries=6,
             ),
+            # Researcher: Flash Lite with live Google Search grounding so the
+            # forecast sees current news, not just training data.
+            "researcher": GeneralLlm(
+                model="gemini/gemini-2.5-flash-lite",
+                temperature=0.2,
+                timeout=180,
+                allowed_tries=6,
+                tools=[{"googleSearch": {}}],
+            ),
+            # Parsing / summarising: cheap OpenRouter free model (separate quota).
             "summarizer": "openrouter/nvidia/nemotron-3.5-lightning:free",
-            "researcher": "openrouter/nvidia/nemotron-3.5-lightning:free",
             "parser": "openrouter/nvidia/nemotron-3.5-lightning:free",
         },
     )
