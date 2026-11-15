@@ -133,6 +133,11 @@ class FallTemplateBot2026(ForecastBot):
             research = ""
             researcher = self.get_llm("researcher")
 
+            if researcher == "google-news-rss":
+                research = await asyncio.to_thread(_google_news_research, question)
+                logger.info(f"Found Research for URL {question.page_url}:\n{research}")
+                return research
+
             prompt = self._get_research_prompt(question, researcher)
 
             if isinstance(researcher, GeneralLlm):
@@ -683,6 +688,52 @@ class FallTemplateBot2026(ForecastBot):
         )
 
 
+def _google_news_research(question: MetaculusQuestion, max_items: int = 12) -> str:
+    """Free research: latest Google News headlines for the question (no API key, no LLM quota)."""
+    import re
+    import urllib.parse
+    import urllib.request
+    import xml.etree.ElementTree as ET
+
+    title = question.question_text or ""
+    q = re.sub(r"[?\"“”]", " ", title)
+    q = re.sub(r"^\s*(Will|Who will|What will|How many|How much|When will|Which)\s+", "", q, flags=re.I)
+    q = re.sub(r"\b(before|by|on|in)\s+(January|February|March|April|May|June|July|August|September|October|November|December)?\s*\d{1,2},?\s*\d{4}\b", " ", q)
+    words = [w for w in q.split() if len(w) > 2][:12]
+    queries = [" ".join(words), " ".join(words[:6])]
+    seen, lines = set(), []
+    for query in queries:
+        if not query.strip():
+            continue
+        url = "https://news.google.com/rss/search?" + urllib.parse.urlencode(
+            {"q": query + " when:30d", "hl": "en-US", "gl": "US", "ceid": "US:en"}
+        )
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                root = ET.fromstring(r.read())
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"News search failed for '{query}': {e}")
+            continue
+        for item in root.iter("item"):
+            t = (item.findtext("title") or "").strip()
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            date = (item.findtext("pubDate") or "")[:16]
+            lines.append(f"- [{date}] {t}")
+            if len(lines) >= max_items:
+                break
+        if len(lines) >= max_items:
+            break
+    if not lines:
+        return "No recent news headlines found. Rely on base rates and the question's background."
+    return (
+        f"Recent news headlines (Google News, last 30 days, retrieved {datetime.now(timezone.utc):%Y-%m-%d}):\n"
+        + "\n".join(lines)
+    )
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
@@ -715,27 +766,18 @@ if __name__ == "__main__":
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
-        # Free-tier budget (Nov 2026): Gemini 2.5 Flash 20 req/day, Flash Lite
-        # 20 req/day, OpenRouter free ~50 req/day. One research + one forecast
-        # + one parse per question keeps ~20 questions/day inside the limits.
+        # Free-tier budget (Nov 2026): Gemini free tier has ~20 req/day per
+        # model and no free Google Search grounding. Research comes from free
+        # Google News RSS headlines (no LLM call); one Gemini forecast + one
+        # OpenRouter-free parse per question.
         llms={
-            # Forecaster: strongest free model available.
             "default": GeneralLlm(
-                model="gemini/gemini-2.5-flash",
+                model="gemini/gemini-3.8-flash",
                 temperature=0.3,
                 timeout=180,
                 allowed_tries=6,
             ),
-            # Researcher: Flash Lite with live Google Search grounding so the
-            # forecast sees current news, not just training data.
-            "researcher": GeneralLlm(
-                model="gemini/gemini-2.5-flash-lite",
-                temperature=0.2,
-                timeout=180,
-                allowed_tries=6,
-                tools=[{"googleSearch": {}}],
-            ),
-            # Parsing / summarising: cheap OpenRouter free model (separate quota).
+            "researcher": "google-news-rss",
             "summarizer": "openrouter/nvidia/nemotron-3.5-lightning:free",
             "parser": "openrouter/nvidia/nemotron-3.5-lightning:free",
         },
