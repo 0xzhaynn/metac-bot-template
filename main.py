@@ -723,9 +723,9 @@ if __name__ == "__main__":
                 timeout=120,
                 allowed_tries=3,
             ),
-            "summarizer": "openrouter/google/gemma-4-31b-it:free",
-            "researcher": "openrouter/google/gemma-4-31b-it:free",
-            "parser": "openrouter/google/gemma-4-31b-it:free",
+            "summarizer": "openrouter/nvidia/nemotron-3.5-lightning:free",
+            "researcher": "openrouter/nvidia/nemotron-3.5-lightning:free",
+            "parser": "openrouter/nvidia/nemotron-3.5-lightning:free",
         },
     )
 
