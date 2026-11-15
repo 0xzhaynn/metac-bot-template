@@ -3,7 +3,7 @@ name: Forecast on new AI tournament questions
 on:
   workflow_dispatch:
   schedule:
-    - cron: "7 6 * * *" # every 20 min, offset off the hour. Make sure to skip already-forecasted questions!
+    - cron: "30 8 * * *" # daily 08:30 UTC (09:30 WAT), just after Gemini free quota resets at midnight Pacific
 
 # Add concurrency group to prevent parallel runs
 concurrency:
