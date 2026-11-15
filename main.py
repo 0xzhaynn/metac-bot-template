@@ -124,9 +124,13 @@ class FallTemplateBot2026(ForecastBot):
         1  # Set this to whatever works for your search-provider/ai-model rate limits
     )
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
-    _structure_output_validation_samples = 2
+    _structure_output_validation_samples = 1
 
     ##################################### RESEARCH #####################################
+
+    async def summarize_research(self, question: MetaculusQuestion, research: str) -> str:
+        # Research is already a short headline list; skip the LLM summary to save free quota.
+        return research
 
     async def run_research(self, question: MetaculusQuestion) -> str:
         async with self._concurrency_limiter:
@@ -768,18 +772,18 @@ if __name__ == "__main__":
         extra_metadata_in_explanation=True,
         # Free-tier budget (Nov 2026): Gemini free tier has ~20 req/day per
         # model and no free Google Search grounding. Research comes from free
-        # Google News RSS headlines (no LLM call); one Gemini forecast + one
-        # OpenRouter-free parse per question.
+        # Google News RSS headlines (no LLM call); one Gemini 3.8 Flash forecast +
+        # one Gemini 3.5 Flash-Lite parse per question (separate 20/day quotas).
         llms={
             "default": GeneralLlm(
                 model="gemini/gemini-3.8-flash",
                 temperature=0.3,
                 timeout=180,
-                allowed_tries=6,
+                allowed_tries=2,
             ),
             "researcher": "google-news-rss",
-            "summarizer": "openrouter/nvidia/nemotron-3.5-lightning:free",
-            "parser": "openrouter/nvidia/nemotron-3.5-lightning:free",
+            "summarizer": GeneralLlm(model="gemini/gemini-3.5-flash-lite", timeout=120, allowed_tries=2),
+            "parser": GeneralLlm(model="gemini/gemini-3.5-flash-lite", temperature=0, timeout=120, allowed_tries=3),
         },
     )
 
