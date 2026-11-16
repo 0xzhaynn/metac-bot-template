@@ -71,9 +71,47 @@ async def _paced_invoke(self, *args, **kwargs):
         if wait > 0:
             await asyncio.sleep(wait)
         try:
-            return await _original_invoke(self, *args, **kwargs)
+            return await _invoke_with_fallback(self, *args, **kwargs)
         finally:
             _llm_last_call = _time.monotonic()
+
+
+# --- Free OpenRouter backup (Nov 2026) ---------------------------------------
+# When a Gemini call hits its free quota (429) or Google is overloaded (503),
+# retry the same prompt on a free OpenRouter model. Once Gemini's daily quota
+# is gone, skip Gemini for the rest of the run so no time is wasted.
+_OPENROUTER_BACKUP = {
+    "gemini/gemini-3.8-flash": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+    "gemini/gemini-3.5-flash-lite": "openrouter/nvidia/nemotron-3.5-lightning:free",
+}
+_gemini_exhausted: set[str] = set()
+
+
+def _backup_llm(llm: GeneralLlm) -> GeneralLlm | None:
+    model = getattr(llm, "model", "")
+    backup = _OPENROUTER_BACKUP.get(model)
+    if not backup or not _os.getenv("OPENROUTER_API_KEY"):
+        return None
+    return GeneralLlm(model=backup, temperature=0.3, timeout=180, allowed_tries=2)
+
+
+async def _invoke_with_fallback(self, *args, **kwargs):
+    model = getattr(self, "model", "")
+    backup = _backup_llm(self)
+    if backup is not None and model in _gemini_exhausted:
+        return await _original_invoke(backup, *args, **kwargs)
+    try:
+        return await _original_invoke(self, *args, **kwargs)
+    except Exception as e:  # noqa: BLE001
+        text = str(e)
+        if backup is None or not any(
+            k in text for k in ("429", "RateLimit", "503", "ServiceUnavailable", "quota")
+        ):
+            raise
+        if "PerDay" in text:
+            _gemini_exhausted.add(model)
+        logger.warning(f"{model} unavailable ({type(e).__name__}); using {backup.model}")
+        return await _original_invoke(backup, *args, **kwargs)
 
 
 GeneralLlm.invoke = _paced_invoke
