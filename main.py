@@ -45,6 +45,41 @@ dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+# --- Free-tier pacing (Nov 2026) ---------------------------------------------
+# Gemini's free tier allows 5 requests/minute per model. The framework runs
+# questions in parallel, so every LLM call goes through one shared gate that
+# lets a single call through at a time, spaced at least LLM_MIN_GAP_SECONDS
+# apart. Slower, but it stays inside the per-minute quota.
+import os as _os
+import time as _time
+
+LLM_MIN_GAP_SECONDS = float(_os.getenv("LLM_MIN_GAP_SECONDS", "15"))
+_llm_gate: asyncio.Lock | None = None
+_llm_gate_loop = None
+_llm_last_call = 0.0
+_original_invoke = GeneralLlm.invoke
+
+
+async def _paced_invoke(self, *args, **kwargs):
+    global _llm_gate, _llm_gate_loop, _llm_last_call
+    loop = asyncio.get_running_loop()
+    if _llm_gate is None or _llm_gate_loop is not loop:
+        _llm_gate = asyncio.Lock()  # main() calls asyncio.run more than once
+        _llm_gate_loop = loop
+    async with _llm_gate:
+        wait = LLM_MIN_GAP_SECONDS - (_time.monotonic() - _llm_last_call)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        try:
+            return await _original_invoke(self, *args, **kwargs)
+        finally:
+            _llm_last_call = _time.monotonic()
+
+
+GeneralLlm.invoke = _paced_invoke
+# -----------------------------------------------------------------------------
+
+
 class FallTemplateBot2026(ForecastBot):
     """
     This is the template bot for the Fall 2026 FutureEval Bot Tournament.
