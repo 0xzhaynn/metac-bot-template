@@ -81,7 +81,7 @@ async def _paced_invoke(self, *args, **kwargs):
 # retry the same prompt on a free OpenRouter model. Once Gemini's daily quota
 # is gone, skip Gemini for the rest of the run so no time is wasted.
 _OPENROUTER_BACKUP = {
-    "gemini/gemini-3.8-flash": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+    "gemini/gemini-3.8-flash": "openrouter/google/gemma-4-31b-it:free",
     "gemini/gemini-3.5-flash-lite": "openrouter/nvidia/nemotron-3.5-lightning:free",
 }
 _gemini_exhausted: set[str] = set()
@@ -92,7 +92,7 @@ def _backup_llm(llm: GeneralLlm) -> GeneralLlm | None:
     backup = _OPENROUTER_BACKUP.get(model)
     if not backup or not _os.getenv("OPENROUTER_API_KEY"):
         return None
-    return GeneralLlm(model=backup, temperature=0.3, timeout=180, allowed_tries=2)
+    return GeneralLlm(model=backup, temperature=0.3, timeout=240, allowed_tries=2)
 
 
 async def _invoke_with_fallback(self, *args, **kwargs):
