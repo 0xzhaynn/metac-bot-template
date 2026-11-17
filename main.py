@@ -81,37 +81,65 @@ async def _paced_invoke(self, *args, **kwargs):
 # retry the same prompt on a free OpenRouter model. Once Gemini's daily quota
 # is gone, skip Gemini for the rest of the run so no time is wasted.
 _OPENROUTER_BACKUP = {
-    "gemini/gemini-3.8-flash": "openrouter/google/gemma-4-31b-it:free",
-    "gemini/gemini-3.5-flash-lite": "openrouter/nvidia/nemotron-3.5-lightning:free",
+    "gemini/gemini-3.8-flash": [
+        "openrouter/google/gemma-4-31b-it:free",
+        "openrouter/google/gemma-4-26b-a4b-it:free",
+    ],
+    "gemini/gemini-3.5-flash-lite": [
+        "openrouter/nvidia/nemotron-3.5-lightning:free",
+        "openrouter/google/gemma-4-26b-a4b-it:free",
+    ],
 }
 _gemini_exhausted: set[str] = set()
+_RETRYABLE = (
+    "429", "RateLimit", "rate limit", "503", "ServiceUnavailable", "quota",
+    "Overloaded", "overloaded", "Timeout", "timed out",
+)
+_BACKUP_ROUNDS = 3  # go through every backup up to 3 times, pausing longer each round
 
 
-def _backup_llm(llm: GeneralLlm) -> GeneralLlm | None:
+def _backup_llms(llm: GeneralLlm) -> list[GeneralLlm]:
     model = getattr(llm, "model", "")
-    backup = _OPENROUTER_BACKUP.get(model)
-    if not backup or not _os.getenv("OPENROUTER_API_KEY"):
-        return None
-    return GeneralLlm(model=backup, temperature=0.3, timeout=240, allowed_tries=2)
+    if not _os.getenv("OPENROUTER_API_KEY"):
+        return []
+    return [
+        GeneralLlm(model=m, temperature=0.3, timeout=240, allowed_tries=2)
+        for m in _OPENROUTER_BACKUP.get(model, [])
+    ]
+
+
+async def _invoke_backups(backups: list[GeneralLlm], *args, **kwargs):
+    last_error: Exception | None = None
+    for round_no in range(_BACKUP_ROUNDS):
+        for b in backups:
+            try:
+                return await _original_invoke(b, *args, **kwargs)
+            except Exception as e:  # noqa: BLE001
+                last_error = e
+                logger.warning(
+                    f"backup {b.model} failed ({type(e).__name__}), round {round_no + 1}"
+                )
+        if round_no < _BACKUP_ROUNDS - 1:
+            await asyncio.sleep(30 * (round_no + 1))
+    assert last_error is not None
+    raise last_error
 
 
 async def _invoke_with_fallback(self, *args, **kwargs):
     model = getattr(self, "model", "")
-    backup = _backup_llm(self)
-    if backup is not None and model in _gemini_exhausted:
-        return await _original_invoke(backup, *args, **kwargs)
+    backups = _backup_llms(self)
+    if backups and model in _gemini_exhausted:
+        return await _invoke_backups(backups, *args, **kwargs)
     try:
         return await _original_invoke(self, *args, **kwargs)
     except Exception as e:  # noqa: BLE001
         text = str(e)
-        if backup is None or not any(
-            k in text for k in ("429", "RateLimit", "503", "ServiceUnavailable", "quota")
-        ):
+        if not backups or not any(k in text for k in _RETRYABLE):
             raise
         if "PerDay" in text:
             _gemini_exhausted.add(model)
-        logger.warning(f"{model} unavailable ({type(e).__name__}); using {backup.model}")
-        return await _original_invoke(backup, *args, **kwargs)
+        logger.warning(f"{model} unavailable ({type(e).__name__}); trying free backups")
+        return await _invoke_backups(backups, *args, **kwargs)
 
 
 GeneralLlm.invoke = _paced_invoke
